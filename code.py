@@ -66,6 +66,8 @@ with open(data_dir + "yelp_labelled.txt") as f1:
     temp = f1.readlines()
     lines=lines+temp
     
+f1.close()
+    
 x = []
 y = []
 for value in lines:
@@ -81,7 +83,7 @@ for value in lines:
     
 from keras.preprocessing.text import Tokenizer
 
-tokenizer = Tokenizer(num_words=2500,split=' ')
+tokenizer = Tokenizer(num_words= 2500, split=' ')
 tokenizer.fit_on_texts(x)
 
 #tokenizer.word_index
@@ -93,32 +95,102 @@ tokenizer.fit_on_texts(x)
 from keras.preprocessing.sequence import pad_sequences
 
 X = tokenizer.texts_to_sequences(x)
+
+word_index = tokenizer.word_index
+
+print("Found {} unique tokens.".format(len(word_index)))
+
 X = pad_sequences(X)
 
 Y = np.array(y)
 
+print("Shape of X is", X.shape)
+print("Shape of Y is", Y.shape)
+
 x_train, x_test, y_train, y_test = train_test_split(X, Y, train_size=0.8)
 
+
+
+# =============================================================================
+# Use the existing embeddings downloaded from the website
+# =============================================================================
+
+embeddings_index = {}
+f = open(os.path.join(data_dir + "glove.6B/", 'glove.6B.100d.txt'))
+for line in f:
+    values = line.split()
+    word = values[0]
+    coefs = np.asarray(values[1:], dtype='float32')
+    embeddings_index[word] = coefs
+f.close()
+
+print('Found %s word vectors.' % len(embeddings_index))
+
+# this "embedding index" maps words to a 100-D vector
+
+Embedding_dim = len(embeddings_index['the'])
+
+
+#we can leverage our embedding_index dictionary and our word_index to 
+#compute our embedding matrix
+
+embedding_matrix = np.zeros((len(word_index) + 1,  Embedding_dim))
+
+for word, i in word_index.items():
+    embedding_vector = embeddings_index.get(word)
+    if embedding_vector is not None:
+        # words not found in embedding index will be all-zeros.
+        embedding_matrix[i] = embedding_vector
+        
+
+
+    
 
 # =============================================================================
 # Build the model structure
 # =============================================================================
 
 
-
-from tensorflow.keras.layers import Embedding, LSTM, Dense, Dropout
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, LSTM, Dense, Dropout, Bidirectional, Input
+from tensorflow.keras.models import Sequential, Model
 
 
 batch_size = 32
 
-model = Sequential()
-model.add(Embedding(2500, 128, input_length = X.shape[1]))
-model.add(Dropout(0.4))
-model.add(LSTM(300, activation="relu"))
-model.add(Dropout(0.4))
 
-model.add(Dense(1, activation="sigmoid"))
+
+# load static pre-trained embedding
+
+embedding_layer = Embedding(len(word_index) + 1,
+                            Embedding_dim,
+                            weights=[embedding_matrix],
+                            input_length = X.shape[1],
+                            trainable = False)
+
+
+sequence_input = Input(shape = (X.shape[1],), dtype = "int32")
+embedded_sequences = embedding_layer(sequence_input)
+x = Dropout(0.2)(embedded_sequences)
+x = Bidirectional(LSTM(200, activation="relu", return_sequences = True))(x)
+x = Dropout(0.2)(x)
+x = Bidirectional(LSTM(200, activation="relu"))(x)
+x = Dropout(0.2)(x)
+Output = Dense(1, activation="sigmoid")(x)
+
+model = Model(sequence_input, Output)
+
+
+
+
+# using an embedding layer to train the coeffcients
+
+#model = Sequential()
+#model.add(Embedding(2500, 128, input_length = X.shape[1]))
+#model.add(Dropout(0.3))
+##model.add(LSTM(300, activation="relu"))
+#model.add(Bidirectional(LSTM(128, activation="sigmoid")))
+#model.add(Dropout(0.3))
+#model.add(Dense(1, activation="sigmoid"))
 
 model.summary()
 
@@ -126,6 +198,10 @@ model.summary()
 model.compile(loss = "binary_crossentropy",
               optimizer = "adam",
               metrics = ["accuracy"])
+
+#model.compile(loss = "sparse_categorical_crossentropy",
+#              optimizer = "adam",
+#              metrics = ["accuracy"])
 
 
 history = model.fit(x_train, y_train, 
@@ -153,6 +229,10 @@ plt.ylabel('Loss')
 plt.xlabel('Epoch')
 plt.legend(['Train', 'Test'], loc='upper left')
 plt.show()
+
+#There's instability in the loss caluclation, due to the clipping of the
+#sigmoid output from the last layer.
+#https://stackoverflow.com/questions/52125924/why-does-sigmoid-crossentropy-of-keras-tensorflow-have-low-precision
 
 
 score = model.evaluate(x_test, y_test, verbose = 2, batch_size=batch_size)
